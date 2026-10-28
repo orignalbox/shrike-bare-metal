@@ -1,0 +1,6 @@
+*.o
+*.elf
+*.bin
+*.lst
+boot2_raw.*
+boot2_padded.*
