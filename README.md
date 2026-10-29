@@ -1,142 +1,80 @@
-# Bare-Metal Blink on Vicharak Shrike Lite (RP2040)
+# Shrike Lite Bare-Metal RP2040 Blink
 
-**Zero SDK. Zero libraries. Pure register-level C on the ARM Cortex-M0+.**
+Bare-metal C firmware for the [Vicharak Shrike Lite](https://vicharak.in/) development board.
+Blinks the onboard RP2040 user LED with zero external dependencies (no Pico SDK, no standard libraries, no HAL).
 
-This project blinks an LED on the [Vicharak Shrike Lite](https://vicharak-in.github.io/shrike/) dev board using nothing but the ARM cross-compiler and raw memory-mapped I/O. Every byte in the final binary is hand-placed — no Pico SDK, no Arduino, no MicroPython, no HAL.
-
-## Why?
-
-Most RP2040 tutorials use the Pico SDK or MicroPython, which hides the actual hardware. This project strips away every abstraction layer to reveal what happens between **power-on** and **LED toggle** at the silicon level:
-
-1. **The ROM bootloader** reads 256 bytes from flash, checks a CRC32
-2. **Our boot2** configures QSPI flash for XIP (eXecute In Place)
-3. **Our startup code** (crt0) sets the stack pointer, zeros `.bss`, copies `.data`, calls `main()`
-4. **Our main()** un-resets the GPIO subsystem, routes a pin to the SIO block, and toggles it in a single CPU cycle
+![Shrike Lite LED Blinking](docs/blink.gif)
 
 ## Hardware
 
 - **Board:** Vicharak Shrike Lite
-- **MCU:** Raspberry Pi RP2040 (Dual-core ARM Cortex-M0+ @ 133MHz, 264KB SRAM)
+- **MCU:** Raspberry Pi RP2040 (Dual-core ARM Cortex-M0+ @ 133 MHz, 264 KB SRAM)
 - **FPGA:** Renesas ForgeFPGA SLG47910 (1,120 LUTs)
-- **LED Pin:** GPIO 25 (change `LED_PIN` in `main.c` if your board differs)
+- **Flash:** Winbond W25Q16JV (2 MB QSPI NOR Flash)
+- **LED Indicators:**
+  - **Power Rail:** Red LED (3.3V supply indicator)
+  - **RP2040 User LED:** Blue LED on GPIO 4 (toggled by this firmware)
+  - **FPGA User LED:** Blue LED driven by Renesas ForgeFPGA logic
 
-## The RP2040 Memory Map
+*Note: GPIO 25 is also toggled simultaneously for compatibility with standard Raspberry Pi Pico hardware.*
 
-```
-  Address         What
-  ──────────────────────────────────────────────────
-  0x00000000      Boot ROM (16KB, mask ROM)
-  0x10000000      QSPI Flash (XIP) ← our code lives here
-  0x20000000      SRAM (264KB) ← stack and variables
-  0x4000C000      RESETS controller
-  0x40014000      IO_BANK0 (GPIO function mux)
-  0x4001C000      PADS_BANK0 (pad electrical config)
-  0xD0000000      SIO (Single-cycle I/O) ← 1-cycle GPIO access
-```
+## Memory Map
 
-## Files
+| Region | Base Address | Size | Description |
+|---|---|---|---|
+| `BOOT2` | `0x10000000` | 256 B | Stage 2 bootloader (Synopsys SSI QSPI continuous read configuration) |
+| `FLASH` | `0x10000100` | 2 MB | Cortex-M0+ vector table and runtime executable |
+| `RAM` | `0x20000000` | 264 KB | Stack and data segments |
+| `RESETS` | `0x4000C000` | - | Subsystem reset controller |
+| `IO_BANK0` | `0x40014000` | - | GPIO function multiplexer |
+| `SIO` | `0xD0000000` | - | Single-cycle I/O (atomic bit-level manipulation) |
 
-```
-shrike-bare-metal/
-├── rp2040.h           Register definitions (all from the official datasheet)
-├── main.c             The program: un-reset → configure → blink
-├── crt0.S             Startup: vector table + reset handler
-├── boot2.S            256-byte second-stage bootloader (QSPI XIP config)
-├── memmap.ld          Linker script (BOOT2 / FLASH / RAM layout)
-├── Makefile           Build pipeline: assemble → link → CRC → UF2
-├── pad_checksum.py    Pad boot2 to 252 bytes + append CRC32
-├── elf2uf2.py         Convert raw binary to UF2 flash format
-├── NOTES.md           First-principles engineering notes on boot chain, bus, and memory map
-└── README.md          This file
-```
+## Register Reference
 
-## Build & Flash
+| Address | Register | Description |
+|---|---|---|
+| `0x4000C000` | `RESETS_RESET` | Clear bit 5 (`IO_BANK0`) and bit 8 (`PADS_BANK0`) to release reset |
+| `0x4000C008` | `RESETS_RESET_DONE` | Poll until peripheral reset release completes |
+| `0x40014024` | `GPIO4_CTRL` | Select Function 5 (SIO) for GPIO 4 (`FUNCSEL = 5`) |
+| `0x400140CC` | `GPIO25_CTRL` | Select Function 5 (SIO) for GPIO 25 (`FUNCSEL = 5`) |
+| `0xD0000024` | `SIO_GPIO_OE_SET` | Atomic output enable for target pins |
+| `0xD000001C` | `SIO_GPIO_OUT_XOR` | Atomic single-cycle GPIO pin state inversion |
 
-### Prerequisites
+All addresses are verified against the RP2040 Datasheet (Sections 2.3.1, 2.14, and 2.19).
 
-```bash
-# Arch Linux
-sudo pacman -S arm-none-eabi-gcc arm-none-eabi-newlib python
+## Build
 
-# Ubuntu / Debian
-sudo apt install gcc-arm-none-eabi libnewlib-arm-none-eabi python3
-```
-
-### Build
+Prerequisites: GNU Arm Embedded Toolchain (`arm-none-eabi-gcc`) and Python 3.
 
 ```bash
 make
 ```
 
 Output:
-```
-boot2: boot2_raw.bin -> boot2_padded.bin (256 bytes, CRC32=0xABCD1234)
---- Section sizes ---
-   text    data     bss     dec     hex filename
-    XXX       0       0     XXX     XXX blink.elf
-UF2: blink.bin -> blink.uf2 (XXX bytes, X blocks)
+- `blink.elf`: 604 bytes total text
+- `blink.uf2`: 1,536 bytes (3 x 512-byte UF2 blocks)
 
-========================================
-  BUILD COMPLETE: blink.uf2
-  Flash: hold BOOT + plug USB, then:
-    cp blink.uf2 /media/$USER/RPI-RP2/
-========================================
-```
+## Flash
 
-### Flash
-
-1. **Hold the BOOT button** on your Shrike Lite
-2. **Plug in USB-C** — the board mounts as a drive called `RPI-RP2`
-3. Run:
+1. Hold the **BOOT** button on the Shrike Lite.
+2. Connect USB-C. The RP2040 Boot ROM mounts as a USB mass storage drive named `RPI-RP2`.
+3. Flash the binary:
    ```bash
    make flash
-   # or manually:
-   cp blink.uf2 /media/$USER/RPI-RP2/
    ```
-4. The board auto-reboots and the LED starts blinking
+   Or manually:
+   ```bash
+   cp blink.uf2 /run/media/$USER/RPI-RP2/
+   ```
+4. The RP2040 Boot ROM writes the payload to QSPI flash and reboots into the firmware. The blue RP2040 LED on GPIO 4 blinks.
 
-### Debug / Inspect
+## Boot Sequence
 
-```bash
-make disasm    # Generate annotated disassembly listing
-make size      # Show section size breakdown
-```
+1. **Boot ROM:** Microcode at `0x00000000` copies the first 256 bytes from external flash (`0x10000000`) into SRAM and validates an MSB-first CRC32 checksum.
+2. **Boot2 (`boot2.S`):** Configures the Synopsys SSI controller into Quad Continuous Read mode (`0xEB`) for eXecute-In-Place (XIP), then returns to Boot ROM.
+3. **Runtime Init (`crt0.S`):** Boot ROM sets the Main Stack Pointer (`_stack_top` at `0x20042000`) and branches to `_reset_handler` at `0x10000104`. `crt0.S` zeros `.bss` in SRAM, copies `.data` from Flash to SRAM, and branches to `main()`.
+4. **Firmware (`main.c`):** Releases `IO_BANK0` and `PADS_BANK0` from reset, configures GPIO 4 and GPIO 25 to the SIO block, sets output direction, and toggles the pins via atomic single-cycle register writes.
 
-## How It Works (The Three Registers)
+## Demonstration Video
 
-To toggle an LED on the RP2040 from scratch, you talk to three hardware blocks:
-
-### 1. RESETS (`0x4000C000`) — Wake up the GPIO
-
-On power-up, the RP2040 holds almost all peripherals in reset to save power. You must clear bit 5 (`IO_BANK0`) and bit 8 (`PADS_BANK0`) and wait for `RESET_DONE` to confirm.
-
-### 2. IO_BANK0 (`0x40014000`) — Route the pin
-
-Each physical pin can be SPI, UART, I2C, PWM, or SIO. Writing `FUNCSEL=5` into `GPIO25_CTRL` connects the pin to the CPU's Single-cycle I/O block.
-
-### 3. SIO (`0xD0000000`) — Toggle the pin
-
-The SIO block provides atomic SET/CLR/XOR registers. Writing `(1<<25)` to `GPIO_OUT_XOR` toggles pin 25 in exactly **one CPU cycle** — no read-modify-write, fully interrupt-safe.
-
-## Register Reference
-
-| Address | Register | Purpose |
-|---|---|---|
-| `0x4000C000` | `RESETS_RESET` | Assert/deassert peripheral resets |
-| `0x4000C008` | `RESETS_RESET_DONE` | Check if peripheral is out of reset |
-| `0x400140CC` | `GPIO25_CTRL` | Function select for pin 25 |
-| `0xD0000014` | `SIO_GPIO_OUT_SET` | Atomic set pin HIGH |
-| `0xD0000018` | `SIO_GPIO_OUT_CLR` | Atomic set pin LOW |
-| `0xD000001C` | `SIO_GPIO_OUT_XOR` | Atomic toggle pin |
-| `0xD0000024` | `SIO_GPIO_OE_SET` | Enable pin as output |
-
-All addresses verified against the [official RP2040 datasheet](https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf).
-
-## License
-
-The boot2 bootloader is derived from the Raspberry Pi Pico SDK (BSD-3-Clause).
-All other code is original work, released under the MIT License.
-
-## Author
-
-Vaibhav Santosh Tiwari ([@orignalbox](https://github.com/orignalbox)) — Vicharak Campus Fellowship 2026
+*Video link will be added upon publication.*

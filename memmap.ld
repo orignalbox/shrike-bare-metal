@@ -1,15 +1,3 @@
-/*
- * memmap.ld — Linker script for bare-metal RP2040
- *
- * Memory layout:
- *   0x10000000 - 0x100000FF : boot2 (256-byte second-stage bootloader)
- *   0x10000100 - ...        : Our application (vector table + code + rodata)
- *   0x20000000 - 0x20041FFF : SRAM (264 KB = 0x42000 bytes)
- *
- * The RP2040 has 264KB of SRAM split across 6 banks,
- * but they're contiguous in the address space so we treat them as one block.
- */
-
 MEMORY
 {
     BOOT2 (rx)  : ORIGIN = 0x10000000, LENGTH = 0x100
@@ -17,36 +5,28 @@ MEMORY
     RAM   (rwx) : ORIGIN = 0x20000000, LENGTH = 264K
 }
 
-/* Stack starts at the top of RAM (grows downward on ARM) */
-_stack_top = ORIGIN(RAM) + LENGTH(RAM);   /* = 0x20042000 */
+/* stack starts at top of ram and grows down */
+_stack_top = ORIGIN(RAM) + LENGTH(RAM);
 
 ENTRY(_reset_handler)
 
 SECTIONS
 {
-    /* --- Second-stage bootloader: exactly 256 bytes at flash start --- */
+    /* 256-byte second-stage bootloader at flash origin */
     .boot2 : {
-        __boot2_start = .;
         KEEP(*(.boot2))
-        __boot2_end = .;
     } > BOOT2
 
-    /* --- Application code + read-only data --- */
+    /* code and vector table */
     .text : {
-        KEEP(*(.vectors))       /* Vector table MUST be first */
-        *(.text*)               /* All code */
-        *(.rodata*)             /* String literals, const data */
+        KEEP(*(.vectors))
+        *(.text*)
+        *(.rodata*)
         . = ALIGN(4);
     } > FLASH
 
-    /*
-     * --- Initialized data (.data) ---
-     * Stored in FLASH (LMA) but copied to RAM (VMA) by crt0.S at startup.
-     * __data_load = where it lives in flash
-     * __data_start / __data_end = where it goes in RAM
-     */
+    /* initialized globals loaded from flash to ram */
     __data_load = LOADADDR(.data);
-
     .data : {
         __data_start = .;
         *(.data*)
@@ -54,10 +34,7 @@ SECTIONS
         __data_end = .;
     } > RAM AT> FLASH
 
-    /*
-     * --- Uninitialized data (.bss) ---
-     * Lives in RAM only. Zeroed by crt0.S at startup.
-     */
+    /* uninitialized globals zeroed out in ram */
     .bss (NOLOAD) : {
         __bss_start = .;
         *(.bss*)
@@ -66,7 +43,6 @@ SECTIONS
         __bss_end = .;
     } > RAM
 
-    /* Discard standard library cruft we don't need */
     /DISCARD/ : {
         *(.ARM.attributes)
         *(.comment)

@@ -38,15 +38,15 @@ def convert(input_path, output_path, base_addr=0x10000000):
         chunk = data[chunk_offset : chunk_offset + PAYLOAD_SIZE]
         addr = base_addr + chunk_offset
 
-        # Pad chunk to exactly 476 bytes (payload area in UF2 block)
-        payload = chunk.ljust(476, b'\x00')
+        # Pad chunk to 256 bytes payload, then to 476 bytes for UF2 block layout
+        payload = chunk.ljust(256, b'\x00').ljust(476, b'\x00')
 
         header = struct.pack("<IIIIIIII",
             UF2_MAGIC_START0,
             UF2_MAGIC_START1,
             UF2_FLAG_FAMILY,       # flags
             addr,                   # target address in flash
-            len(chunk),             # data size (actual, not padded)
+            256,                    # payload size (fixed 256 bytes for RP2040)
             i,                      # block number
             num_blocks,             # total blocks
             RP2040_FAMILY_ID        # family ID
